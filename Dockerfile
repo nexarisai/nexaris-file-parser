@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 10000
 
-CMD gunicorn --bind 0.0.0.0:${PORT:-10000} app:app
+CMD gunicorn --bind 0.0.0.0:${PORT:-10000} --timeout 300 --workers 2 --threads 4 app:app
