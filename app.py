@@ -9,8 +9,10 @@ import gc
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Max rows per sheet to prevent memory issues (adjust as needed)
-MAX_ROWS_PER_SHEET = 5000
+# Limits to prevent memory issues on Render free tier (512MB)
+MAX_FILE_SIZE_MB = 5  # Max file size in MB
+MAX_ROWS_PER_SHEET = 2000  # Reduced from 5000
+MAX_COLS = 50  # Max columns to read
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -26,19 +28,44 @@ def parse_file():
         file = request.files['file']
         filename = file.filename.lower()
 
+        # Check file size first
+        file.seek(0, 2)  # Seek to end
+        file_size_mb = file.tell() / (1024 * 1024)
+        file.seek(0)  # Reset to beginning
+
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            return jsonify({
+                "error": f"File too large ({file_size_mb:.1f}MB). Max size is {MAX_FILE_SIZE_MB}MB. Please split the file or reduce data."
+            }), 400
+
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
             # Parse Excel with pandas - memory efficient approach
-            file_stream = io.BytesIO(file.read())
+            file_content = file.read()
+            file_stream = io.BytesIO(file_content)
+            del file_content  # Free the raw bytes immediately
+            gc.collect()
 
             # Use ExcelFile to read sheets efficiently
-            with pd.ExcelFile(file_stream, engine='openpyxl') as xlsx:
+            try:
+                xlsx = pd.ExcelFile(file_stream, engine='openpyxl')
                 sheet_names = xlsx.sheet_names
                 extracted_text = ""
                 truncated = False
 
-                for sheet_name in sheet_names:
-                    # Read sheet with row limit to prevent memory issues
-                    df = pd.read_excel(xlsx, sheet_name=sheet_name, nrows=MAX_ROWS_PER_SHEET)
+                # Only process first 3 sheets to save memory
+                for sheet_name in sheet_names[:3]:
+                    # Read sheet with row and column limits
+                    df = pd.read_excel(
+                        xlsx,
+                        sheet_name=sheet_name,
+                        nrows=MAX_ROWS_PER_SHEET,
+                        usecols=lambda x: x < MAX_COLS if isinstance(x, int) else True
+                    )
+
+                    # Limit columns if too many
+                    if len(df.columns) > MAX_COLS:
+                        df = df.iloc[:, :MAX_COLS]
+                        truncated = True
 
                     extracted_text += f"\n=== Sheet: {sheet_name} ===\n"
                     extracted_text += df.to_string(index=True) + "\n"
@@ -48,13 +75,18 @@ def parse_file():
                         truncated = True
                         extracted_text += f"\n[Note: Sheet truncated at {MAX_ROWS_PER_SHEET} rows]\n"
 
-                    # Free memory
+                    # Free memory aggressively
                     del df
                     gc.collect()
 
-            # Clean up
-            file_stream.close()
-            gc.collect()
+                if len(sheet_names) > 3:
+                    truncated = True
+                    extracted_text += f"\n[Note: Only processed first 3 of {len(sheet_names)} sheets]\n"
+
+                xlsx.close()
+            finally:
+                file_stream.close()
+                gc.collect()
 
             return jsonify({
                 "success": True,
