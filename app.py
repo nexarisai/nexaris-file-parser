@@ -4,9 +4,13 @@ import pandas as pd
 import pdfplumber
 import io
 import os
+import gc
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+# Max rows per sheet to prevent memory issues (adjust as needed)
+MAX_ROWS_PER_SHEET = 5000
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -23,23 +27,42 @@ def parse_file():
         filename = file.filename.lower()
 
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
-            # Parse Excel with pandas
-            file_content = file.read()
-            xlsx = pd.ExcelFile(io.BytesIO(file_content))
+            # Parse Excel with pandas - memory efficient approach
+            file_stream = io.BytesIO(file.read())
 
-            extracted_text = ""
-            for sheet_name in xlsx.sheet_names:
-                df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet_name)
-                # Use pandas to_string() for consistent formatting
-                extracted_text += f"\n=== Sheet: {sheet_name} ===\n"
-                extracted_text += df.to_string(index=True) + "\n"
+            # Use ExcelFile to read sheets efficiently
+            with pd.ExcelFile(file_stream, engine='openpyxl') as xlsx:
+                sheet_names = xlsx.sheet_names
+                extracted_text = ""
+                truncated = False
+
+                for sheet_name in sheet_names:
+                    # Read sheet with row limit to prevent memory issues
+                    df = pd.read_excel(xlsx, sheet_name=sheet_name, nrows=MAX_ROWS_PER_SHEET)
+
+                    extracted_text += f"\n=== Sheet: {sheet_name} ===\n"
+                    extracted_text += df.to_string(index=True) + "\n"
+
+                    # Check if we hit the row limit
+                    if len(df) >= MAX_ROWS_PER_SHEET:
+                        truncated = True
+                        extracted_text += f"\n[Note: Sheet truncated at {MAX_ROWS_PER_SHEET} rows]\n"
+
+                    # Free memory
+                    del df
+                    gc.collect()
+
+            # Clean up
+            file_stream.close()
+            gc.collect()
 
             return jsonify({
                 "success": True,
                 "text": extracted_text.strip(),
                 "fileName": file.filename,
                 "fileType": "excel",
-                "sheets": xlsx.sheet_names
+                "sheets": sheet_names,
+                "truncated": truncated
             })
 
         elif filename.endswith('.pdf'):
