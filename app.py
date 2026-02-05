@@ -52,8 +52,8 @@ def parse_file():
                 extracted_text = ""
                 truncated = False
 
-                # Only process first 3 sheets to save memory
-                for sheet_name in sheet_names[:3]:
+                # Process all sheets (up to 15 max for memory safety)
+                for sheet_name in sheet_names[:15]:
                     # Read sheet with row and column limits
                     df = pd.read_excel(
                         xlsx,
@@ -79,9 +79,9 @@ def parse_file():
                     del df
                     gc.collect()
 
-                if len(sheet_names) > 3:
+                if len(sheet_names) > 15:
                     truncated = True
-                    extracted_text += f"\n[Note: Only processed first 3 of {len(sheet_names)} sheets]\n"
+                    extracted_text += f"\n[Note: Only processed first 15 of {len(sheet_names)} sheets]\n"
 
                 xlsx.close()
             finally:
